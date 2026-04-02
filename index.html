@@ -828,11 +828,12 @@ body{font-family:'Nunito',sans-serif;background:var(--bg);color:var(--text);min-
     <input type="hidden" id="reimbBi">
     <div id="reimbBoyHeader" style="display:flex;align-items:center;gap:10px;background:var(--surface2);border-radius:12px;padding:12px 14px;margin-bottom:16px;border:1.5px solid var(--border);"></div>
     <div class="set-section">
-      <h3>Amount to Reimburse</h3>
+      <h3>Amount</h3>
       <div class="field-row">
         <label>$ Amount</label>
-        <input class="finput" id="reimbAmount" type="number" min="0.25" max="500" step="0.25" placeholder="e.g. 12.50" style="max-width:110px;">
+        <input class="finput" id="reimbAmount" type="number" min="-500" max="500" step="0.25" placeholder="e.g. 12.50 or -5.00" style="max-width:130px;">
       </div>
+      <p style="font-size:.68rem;color:var(--muted);margin-top:4px;">Enter a <b style="color:#93c5fd;">positive number</b> to pay them back, or a <b style="color:#fca5a5;">negative number</b> if they owe you (e.g. -5.00).</p>
     </div>
     <div class="set-section">
       <h3>What was it for?</h3>
@@ -1342,6 +1343,7 @@ function setAppr(weekKey,bi,key,val){wd(weekKey)[`appr_b${bi}_${key}`]=val;save(
 // ─── EARNINGS ────────────────────────────────────────────────────────────────
 // $10: rot chore = $4 total (2×$2), bed+hw = $3/14 each, dishes = $3/7 each
 function calcEarnings(weekKey,bi){
+  // Full earnings including reimbursements — used for allowance tracker & payments
   const ROT=2.0, DAILY=3/14, DISH=3/7;
   let e=0;
   if(getChk(weekKey,bi,'rot_wed')) e+=ROT;
@@ -1355,6 +1357,22 @@ function calcEarnings(weekKey,bi){
   const bonus=getBonusTotal(weekKey,bi);
   const reimb=getReimbTotal(weekKey,bi);
   return parseFloat((base+bonus+reimb).toFixed(2));
+}
+
+function calcChoreEarnings(weekKey,bi){
+  // Chore + bonus earnings only — excludes reimbursements — used for reports
+  const ROT=2.0, DAILY=3/14, DISH=3/7;
+  let e=0;
+  if(getChk(weekKey,bi,'rot_wed')) e+=ROT;
+  if(getChk(weekKey,bi,'rot_sat')) e+=ROT;
+  for(let d=0;d<7;d++){
+    if(getChk(weekKey,bi,`bed_${d}`)) e+=DAILY;
+    if(getChk(weekKey,bi,`hw_${d}`)) e+=DAILY;
+    if(getChk(weekKey,bi,`dishes_${d}`)) e+=DISH;
+  }
+  const base=Math.min(e, cfg.allowance);
+  const bonus=getBonusTotal(weekKey,bi);
+  return parseFloat((base+bonus).toFixed(2));
 }
 
 function getBonusTotal(weekKey,bi){
@@ -1692,9 +1710,25 @@ function renderAllowance(weekKey){
     const reimbs=getReimbs(weekKey,bi);
     const reimbTotal=getReimbTotal(weekKey,bi);
 
-    // bonus display tags
-    const bonusTags=bonuses.map(b=>`<span class="bonus-tag" title="${b.reason} · added by ${b.addedBy} on ${b.date}">⭐ +$${b.amount.toFixed(2)} ${b.reason.slice(0,24)}${b.reason.length>24?'…':''}</span>`).join(' ');
-    const reimbTags=reimbs.map(r=>`<span class="bonus-tag" style="background:#0c1a2e;border-color:var(--blue);color:#93c5fd;" title="${r.reason} · added by ${r.addedBy} on ${r.date}">💸 +$${r.amount.toFixed(2)} ${r.reason.slice(0,24)}${r.reason.length>24?'…':''}</span>`).join(' ');
+    // bonus display tags — with delete button for parents
+    const bonusTags=bonuses.map((b,idx)=>{
+      const sign=b.amount>=0?'+':'';
+      return `<span class="bonus-tag" style="cursor:default;" title="${b.reason} · added by ${b.addedBy} on ${b.date}">
+        ⭐ ${sign}$${b.amount.toFixed(2)} ${b.reason.slice(0,20)}${b.reason.length>20?'…':''}
+        ${isParent?`<span onclick="deleteBonus(${bi},'${weekKey}',${idx})" style="cursor:pointer;margin-left:3px;opacity:.7;font-size:.7rem;" title="Delete this bonus">✕</span>`:''}
+      </span>`;
+    }).join(' ');
+
+    const reimbTags=reimbs.map((r,idx)=>{
+      const sign=r.amount>=0?'+':'';
+      const col=r.amount>=0?'#93c5fd':'#fca5a5';
+      const bg=r.amount>=0?'#0c1a2e':'#1c0a0a';
+      const border=r.amount>=0?'var(--blue)':'var(--red)';
+      return `<span class="bonus-tag" style="background:${bg};border-color:${border};color:${col};cursor:default;" title="${r.reason} · added by ${r.addedBy} on ${r.date}">
+        💸 ${sign}$${Math.abs(r.amount).toFixed(2)} ${r.reason.slice(0,20)}${r.reason.length>20?'…':''}
+        ${isParent?`<span onclick="deleteReimb(${bi},'${weekKey}',${idx})" style="cursor:pointer;margin-left:3px;opacity:.7;font-size:.7rem;" title="Delete this reimbursement">✕</span>`:''}
+      </span>`;
+    }).join(' ');
 
     return `<div class="allow-boy-row">
       <div class="allow-left">
@@ -2357,8 +2391,9 @@ function aggregateWeeks(weekKeys){
   weekKeys.forEach(wkStr=>{
     cfg.boys.forEach((boy,bi)=>{
       const rec=getPayRecord(bi,wkStr);
-      // force sync earnings from weekData
-      const earnedAmt=parseFloat(calcEarnings(wkStr,bi).toFixed(2));
+      // use chore+bonus earnings only for reports (excludes reimbursements)
+      const earnedAmt=parseFloat(calcChoreEarnings(wkStr,bi).toFixed(2));
+      const reimbAmt=parseFloat(getReimbTotal(wkStr,bi).toFixed(2));
       const {done,total}=countProgress(wkStr,bi);
       boys[bi].weeksTracked++;
       boys[bi].earned+=earnedAmt;
@@ -2369,6 +2404,7 @@ function aggregateWeeks(weekKeys){
       boys[bi].weeks.push({
         weekKey:wkStr,
         earned:earnedAmt,
+        reimb:reimbAmt,
         paid:rec.paid,
         paidDate:rec.paidDate,
         done, total,
@@ -3072,7 +3108,7 @@ function saveReimb(){
   const amount=parseFloat(document.getElementById('reimbAmount').value);
   const reason=document.getElementById('reimbReason').value.trim();
   const weekKey=document.getElementById('reimbWeek').value;
-  if(isNaN(amount)||amount<=0){showToast('Enter a valid amount!',true);return;}
+  if(isNaN(amount)||amount===0){showToast('Enter a valid amount (can be negative to charge back)',true);return;}
   if(!reason){showToast('Please add a reason!',true);return;}
   if(!weekKey){showToast('Please select a week!',true);return;}
   if(!payLog._reimbs) payLog._reimbs={};
@@ -3082,9 +3118,34 @@ function saveReimb(){
   syncEarnings(weekKey);
   save();
   closeAll();
-  addNotif(`💸 Reimbursement $${amount.toFixed(2)} added for ${cfg.boys[bi].name}: "${reason}"`);
-  showToast(`💸 $${amount.toFixed(2)} reimbursement added for ${cfg.boys[bi].name}!`);
+  const sign=amount>=0?'+':'';
+  addNotif(`💸 Reimbursement ${sign}$${amount.toFixed(2)} added for ${cfg.boys[bi].name}: "${reason}"`);
+  showToast(`💸 ${sign}$${amount.toFixed(2)} reimbursement added for ${cfg.boys[bi].name}!`);
   render();
+}
+
+function deleteBonus(bi, weekKey, idx){
+  if(!confirm('Delete this bonus?')) return;
+  const bk=`b${bi}_${weekKey}`;
+  if(payLog._bonuses&&payLog._bonuses[bk]){
+    payLog._bonuses[bk].splice(idx,1);
+    syncEarnings(weekKey);
+    save();
+    showToast('⭐ Bonus deleted.');
+    render();
+  }
+}
+
+function deleteReimb(bi, weekKey, idx){
+  if(!confirm('Delete this reimbursement?')) return;
+  const rk=`b${bi}_${weekKey}`;
+  if(payLog._reimbs&&payLog._reimbs[rk]){
+    payLog._reimbs[rk].splice(idx,1);
+    syncEarnings(weekKey);
+    save();
+    showToast('💸 Reimbursement deleted.');
+    render();
+  }
 }
 
 // ─── GRADE SYSTEM ─────────────────────────────────────────────────────────────
